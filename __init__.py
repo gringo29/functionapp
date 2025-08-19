@@ -1,4 +1,4 @@
-# __init__.py dentro de tu Function
+# __init__.py de tu función HelloFunction
 import logging
 import azure.functions as func
 import json
@@ -6,7 +6,6 @@ import json
 def main(req: func.HttpRequest) -> func.HttpResponse:
     logging.info('HelloFunction ha sido invocada.')
 
-    # Leer parámetro "name" del query string o body JSON
     name = req.params.get('name')
     if not name:
         try:
@@ -15,9 +14,13 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             req_body = {}
         name = req_body.get('name')
 
-    # Responder siempre con JSON
+    if name:
+        mensaje = {"message": f"Hola {name}, tu Function ha sido invocada correctamente!"}
+    else:
+        mensaje = {"message": "Hola, no enviaste nombre."}
+
     return func.HttpResponse(
-        json.dumps({"message": f"Hola {name} desde Azure Function!"}),
+        json.dumps(mensaje),
         mimetype="application/json",
         status_code=200
     )
