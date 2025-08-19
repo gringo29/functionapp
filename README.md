@@ -1,6 +1,1 @@
-# functionapp
-# functionapp
-# functionapp
-# functionapp
-# functionapp
-# functionapp
+# Azure Function in Python
