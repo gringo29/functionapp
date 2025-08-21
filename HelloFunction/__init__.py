@@ -1,60 +1,60 @@
 import logging
-import requests
-import tempfile
-import tarfile
-import os
-import io
-import zipfile
 import azure.functions as func
+import urllib.request
+import urllib.parse
+import tempfile
+import zipfile
+import os
+
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
-    logging.info("Function triggered")
+    logging.info("Procesando solicitud de certificado...")
 
-    # Recibir hostname
-    hostname = req.params.get("hostname")
+    # Leer parámetros del request
+    try:
+        req_body = req.get_json()
+    except ValueError:
+        return func.HttpResponse("Invalid body", status_code=400)
+
+    hostname = req_body.get("hostname")
     if not hostname:
-        try:
-            req_body = req.get_json()
-        except ValueError:
-            return func.HttpResponse("Falta parámetro hostname", status_code=400)
-        hostname = req_body.get("hostname")
+        return func.HttpResponse("Falta 'hostname'", status_code=400)
 
-    if not hostname:
-        return func.HttpResponse("Debe especificar hostname", status_code=400)
-
-    # Usuario, password y API URL de la VM
-    vm_user = os.environ.get("VM_USER", "demo")
-    vm_pass = os.environ.get("VM_PASS", "1234")
-    api_url = os.environ.get("VM_API_URL", "http://172.171.221.176:5000/getcert")
-
-    # POST a la VM
-    files = {
-        "user": (None, vm_user),
-        "pass": (None, vm_pass),
-        "hostname": (None, hostname)
-    }
+    # Configuración de la VM que genera certificados
+    api_url = "http://172.171.221.176:5000/getcert"
+    vm_user = "demo"
+    vm_pass = "1234"
 
     try:
-        response = requests.post(api_url, files=files, timeout=10)
-        response.raise_for_status()
-    except Exception as e:
-        return func.HttpResponse(f"Error conectando a la VM: {str(e)}", status_code=502)
+        # Preparar data del POST
+        data = urllib.parse.urlencode({
+            "user": vm_user,
+            "pass": vm_pass,
+            "hostname": hostname
+        }).encode("utf-8")
 
-    # Guardar tar.gz recibido en temp
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".tar.gz") as tmp_tar:
-        tmp_tar.write(response.content)
-        tmp_tar_path = tmp_tar.name
+        # Enviar request a la VM
+        req_vm = urllib.request.Request(api_url, data=data, method="POST")
+        with urllib.request.urlopen(req_vm, timeout=15) as resp:
+            if resp.status != 200:
+                return func.HttpResponse(
+                    f"Error desde VM: {resp.status} {resp.reason}",
+                    status_code=500
+                )
+            response_content = resp.read()
 
-    # Extraer tar.gz a temp dir
-    extract_dir = tempfile.mkdtemp()
-    try:
-        with tarfile.open(tmp_tar_path, "r:gz") as tar:
-            tar.extractall(path=extract_dir)
-    except Exception as e:
-        return func.HttpResponse(f"Error extrayendo el certificado: {str(e)}", status_code=500)
+        # Guardar temporalmente el .tar.gz recibido
+        temp_dir = tempfile.mkdtemp()
+        tar_path = os.path.join(temp_dir, f"{hostname}.tar.gz")
+        with open(tar_path, "wb") as f:
+            f.write(response_content)
 
-    # Crear archivo client.ovpn
-    ovpn_content = f"""
+        # Crear un zip con el client.ovpn y los certificados
+        zip_path = os.path.join(temp_dir, f"{hostname}.zip")
+        with zipfile.ZipFile(zip_path, "w") as zipf:
+            zipf.write(tar_path, arcname=f"{hostname}.tar.gz")
+
+            ovpn_content = f"""
 client
 dev tun
 proto udp
@@ -67,29 +67,24 @@ ca ca.crt
 cert {hostname}.crt
 key {hostname}.key
 remote-cert-tls server
-tls-auth ./tacloud.key 1
-cipher AES-256-GCM
+cipher AES-256-CBC
 auth SHA256
 verb 3
 """
-    ovpn_path = os.path.join(extract_dir, "client.ovpn")
-    with open(ovpn_path, "w") as f:
-        f.write(ovpn_content)
+            ovpn_path = os.path.join(temp_dir, "client.ovpn")
+            with open(ovpn_path, "w") as ovpn_file:
+                ovpn_file.write(ovpn_content)
+            zipf.write(ovpn_path, arcname="client.ovpn")
 
-    # Crear zip en memoria
-    zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
-        # Agregar todos los archivos del extract_dir
-        for root, _, files in os.walk(extract_dir):
-            for file in files:
-                file_path = os.path.join(root, file)
-                arcname = os.path.relpath(file_path, extract_dir)
-                zipf.write(file_path, arcname)
+        # Devolver el zip
+        with open(zip_path, "rb") as f:
+            zip_bytes = f.read()
 
-    zip_buffer.seek(0)
+        headers = {
+            "Content-Disposition": f"attachment; filename={hostname}.zip"
+        }
+        return func.HttpResponse(zip_bytes, headers=headers, mimetype="application/zip")
 
-    # Devolver zip como response
-    headers = {
-        "Content-Disposition": f"attachment; filename={hostname}_certs.zip"
-    }
-    return func.HttpResponse(zip_buffer.read(), mimetype="application/zip", headers=headers)
+    except Exception as e:
+        logging.error(f"Error en Function App: {e}")
+        return func.HttpResponse(f"Internal error: {str(e)}", status_code=500)
