@@ -5,13 +5,11 @@ import urllib.parse
 import tempfile
 import zipfile
 import os
-import tarfile
 
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
-    logging.info("Procesando solicitud de certificado (inline OVPN)...")
+    logging.info("Procesando solicitud de certificado (OVPN + tar.gz)...")
 
-    # Leer parámetros
     try:
         req_body = req.get_json()
     except ValueError:
@@ -41,32 +39,15 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                     f"Error desde VM: {resp.status} {resp.reason}",
                     status_code=500
                 )
-            response_content = resp.read()
+            tar_content = resp.read()
 
-        # Guardar el tar.gz temporalmente
+        # Guardar el tar.gz tal cual
         temp_dir = tempfile.mkdtemp()
         tar_path = os.path.join(temp_dir, f"{hostname}.tar.gz")
         with open(tar_path, "wb") as f:
-            f.write(response_content)
+            f.write(tar_content)
 
-        # Extraer los archivos
-        with tarfile.open(tar_path, "r:gz") as tar:
-            tar.extractall(temp_dir)
-
-        # Rutas esperadas
-        ca_path = os.path.join(temp_dir, "ca.crt")
-        crt_path = os.path.join(temp_dir, f"{hostname}.crt")
-        key_path = os.path.join(temp_dir, f"{hostname}.key")
-
-        # Leer contenidos
-        with open(ca_path) as f:
-            ca_data = f.read().strip()
-        with open(crt_path) as f:
-            crt_data = f.read().strip()
-        with open(key_path) as f:
-            key_data = f.read().strip()
-
-        # Generar OVPN con certificados embebidos
+        # Generar client.ovpn con valores genéricos
         ovpn_content = f"""
 client
 dev tun
@@ -76,33 +57,26 @@ resolv-retry infinite
 nobind
 persist-key
 persist-tun
+ca ca.crt
+cert {hostname}.crt
+key {hostname}.key
 remote-cert-tls server
-cipher AES-256-CBC
+tls-auth ./tacloud.key 1
+cipher AES-256-GCM
 auth SHA256
 verb 3
-
-<ca>
-{ca_data}
-</ca>
-
-<cert>
-{crt_data}
-</cert>
-
-<key>
-{key_data}
-</key>
 """
+        ovpn_path = os.path.join(temp_dir, "client.ovpn")
+        with open(ovpn_path, "w") as f:
+            f.write(ovpn_content)
 
-        # Escribir en un zip
+        # Crear zip con el tar.gz y el client.ovpn
         zip_path = os.path.join(temp_dir, f"{hostname}.zip")
         with zipfile.ZipFile(zip_path, "w") as zipf:
-            ovpn_path = os.path.join(temp_dir, "client.ovpn")
-            with open(ovpn_path, "w") as f:
-                f.write(ovpn_content)
+            zipf.write(tar_path, arcname=f"{hostname}.tar.gz")
             zipf.write(ovpn_path, arcname="client.ovpn")
 
-        # Devolver el zip
+        # Devolver el zip al cliente
         with open(zip_path, "rb") as f:
             zip_bytes = f.read()
 
