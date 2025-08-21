@@ -5,12 +5,13 @@ import urllib.parse
 import tempfile
 import zipfile
 import os
+import tarfile
 
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
-    logging.info("Procesando solicitud de certificado...")
+    logging.info("Procesando solicitud de certificado (inline OVPN)...")
 
-    # Leer parámetros del request
+    # Leer parámetros
     try:
         req_body = req.get_json()
     except ValueError:
@@ -20,20 +21,19 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
     if not hostname:
         return func.HttpResponse("Falta 'hostname'", status_code=400)
 
-    # Configuración de la VM que genera certificados
-    api_url = "http://172.171.221.176:5000/getcert"
+    # Configuración de la VM
+    api_url = "http://<IP_VM>:5000/getcert"
     vm_user = "demo"
     vm_pass = "1234"
 
     try:
-        # Preparar data del POST
+        # POST hacia la VM
         data = urllib.parse.urlencode({
             "user": vm_user,
             "pass": vm_pass,
             "hostname": hostname
         }).encode("utf-8")
 
-        # Enviar request a la VM
         req_vm = urllib.request.Request(api_url, data=data, method="POST")
         with urllib.request.urlopen(req_vm, timeout=15) as resp:
             if resp.status != 200:
@@ -43,37 +43,63 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                 )
             response_content = resp.read()
 
-        # Guardar temporalmente el .tar.gz recibido
+        # Guardar el tar.gz temporalmente
         temp_dir = tempfile.mkdtemp()
         tar_path = os.path.join(temp_dir, f"{hostname}.tar.gz")
         with open(tar_path, "wb") as f:
             f.write(response_content)
 
-        # Crear un zip con el client.ovpn y los certificados
-        zip_path = os.path.join(temp_dir, f"{hostname}.zip")
-        with zipfile.ZipFile(zip_path, "w") as zipf:
-            zipf.write(tar_path, arcname=f"{hostname}.tar.gz")
+        # Extraer los archivos
+        with tarfile.open(tar_path, "r:gz") as tar:
+            tar.extractall(temp_dir)
 
-            ovpn_content = f"""
+        # Rutas esperadas
+        ca_path = os.path.join(temp_dir, "ca.crt")
+        crt_path = os.path.join(temp_dir, f"{hostname}.crt")
+        key_path = os.path.join(temp_dir, f"{hostname}.key")
+
+        # Leer contenidos
+        with open(ca_path) as f:
+            ca_data = f.read().strip()
+        with open(crt_path) as f:
+            crt_data = f.read().strip()
+        with open(key_path) as f:
+            key_data = f.read().strip()
+
+        # Generar OVPN con certificados embebidos
+        ovpn_content = f"""
 client
 dev tun
 proto udp
-remote 172.171.221.176 1194
+remote <IP_VPN_SERVER> 1194
 resolv-retry infinite
 nobind
 persist-key
 persist-tun
-ca ca.crt
-cert {hostname}.crt
-key {hostname}.key
 remote-cert-tls server
 cipher AES-256-CBC
 auth SHA256
 verb 3
+
+<ca>
+{ca_data}
+</ca>
+
+<cert>
+{crt_data}
+</cert>
+
+<key>
+{key_data}
+</key>
 """
+
+        # Escribir en un zip
+        zip_path = os.path.join(temp_dir, f"{hostname}.zip")
+        with zipfile.ZipFile(zip_path, "w") as zipf:
             ovpn_path = os.path.join(temp_dir, "client.ovpn")
-            with open(ovpn_path, "w") as ovpn_file:
-                ovpn_file.write(ovpn_content)
+            with open(ovpn_path, "w") as f:
+                f.write(ovpn_content)
             zipf.write(ovpn_path, arcname="client.ovpn")
 
         # Devolver el zip
