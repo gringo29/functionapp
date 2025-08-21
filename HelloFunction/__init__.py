@@ -22,7 +22,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         return func.HttpResponse("Falta 'hostname'", status_code=400)
 
     # Configuración de la VM
-    api_url = "http://<IP_VM>:5000/getcert"
+    api_url = "http://172.171.221.176:5000/getcert"
     vm_user = "demo"
     vm_pass = "1234"
 
@@ -71,7 +71,7 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
 client
 dev tun
 proto udp
-remote <IP_VPN_SERVER> 1194
+remote 172.171.221.176 1194
 resolv-retry infinite
 nobind
 persist-key
